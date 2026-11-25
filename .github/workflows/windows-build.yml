@@ -17,13 +17,13 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 120
     env:
-      QT_PATH: ${{ github.workspace }}\upstream\thirdparty\qt\5.15.2_wintab\msvc2019_64
+      QT_PATH: ${{ github.workspace }}\\upstream\\thirdparty\\qt\\5.15.2_wintab\\msvc2019_64
       MSVCVERSION: "Visual Studio 17 2022"
       BOOST_TOOLSET: "14.3"
       BOOST_VERSION: "1.87.0"
-      BOOST_ROOT: C:\local\boost_1_87_0
+      BOOST_ROOT: C:\\local\\boost_1_87_0
       OPENCV_VERSION: "4.13.0"
-      OpenCV_DIR: C:\tools\opencv\build
+      OpenCV_DIR: C:\\tools\\opencv\\build
 
     steps:
       - name: Checkout OpenTooz project
@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            C:\tools\opencv
+            C:\\tools\\opencv
             ${{ env.BOOST_ROOT }}
           key: ${{ runner.os }}-opentoonz-deps-${{ env.OPENCV_VERSION }}-boost-${{ env.BOOST_VERSION }}
 
@@ -56,56 +56,90 @@ jobs:
       - name: Install custom Qt 5.15.2 with WinTab support
         shell: cmd
         run: |
-          mkdir upstream\thirdparty\qt
+          mkdir upstream\\thirdparty\\qt
           curl -fsSL -o Qt5.15.2_wintab.zip https://github.com/shun-iwasawa/qt5/releases/download/v5.15.2_wintab/Qt5.15.2_wintab.zip
           7z x Qt5.15.2_wintab.zip
-          move Qt5.15.2_wintab\5.15.2_wintab upstream\thirdparty\qt
+          move Qt5.15.2_wintab\\5.15.2_wintab upstream\\thirdparty\\qt
 
       - name: Install upstream prebuilt third-party libraries
         shell: cmd
         run: |
           curl -fsSL -o thirdparty-libs.zip https://github.com/andeon/opentoonz-thirdparty-libs/releases/download/prebuilt-libs-v1/thirdparty-libs.zip
-          rem The archive contains third-party folders; extract them directly into upstream\\thirdparty as instructed by its release.
+          rem Extract the upstream prebuilt dependencies into the official thirdparty folder.
           7z x -y -o"%GITHUB_WORKSPACE%\\upstream\\thirdparty" thirdparty-libs.zip
-          rem Fail early if the expected LFS libraries are still text pointers or missing.
-          powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $files=@('upstream/thirdparty/lzo/2.03/LZO_lib/lzo2_64.lib','upstream/thirdparty/glut/3.7.6/lib/glut64.lib'); foreach($f in $files){ if(!(Test-Path $f)){ throw \"Missing library: $f\" }; $b=[IO.File]::ReadAllBytes((Resolve-Path $f)); if($b.Length -lt 8 -or [Text.Encoding]::ASCII.GetString($b,0,[Math]::Min(20,$b.Length)).StartsWith('version https://git-lfs')){ throw \"Invalid Git LFS placeholder or empty library: $f\" }; Write-Host \"Verified $f ($($b.Length) bytes)\" }"
+          rem LZO is still supplied by the upstream prebuilt dependency archive.
+          powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $f='upstream/thirdparty/lzo/2.03/LZO_lib/lzo2_64.lib'; if(!(Test-Path $f)){ throw \"Missing library: $f\" }; $b=[IO.File]::ReadAllBytes((Resolve-Path $f)); if($b.Length -lt 8 -or [Text.Encoding]::ASCII.GetString($b,0,[Math]::Min(20,$b.Length)).StartsWith('version https://git-lfs')){ throw \"Invalid LZO library: $f\" }; Write-Host \"Verified $f ($($b.Length) bytes)\""
+
+      - name: Build compatible 64-bit FreeGLUT library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:VCPKG_INSTALLATION_ROOT) {
+            throw 'VCPKG_INSTALLATION_ROOT is not available on this Windows runner.'
+          }
+          & "$env:VCPKG_INSTALLATION_ROOT\\vcpkg.exe" install freeglut:x64-windows
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg failed to install FreeGLUT.' }
+
+          $package = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed\\x64-windows'
+          $glutRoot = Join-Path $env:GITHUB_WORKSPACE 'upstream\\thirdparty\\glut\\3.7.6'
+          $includeSource = Join-Path $package 'include\\GL'
+          $includeTarget = Join-Path $glutRoot 'include\\GL'
+          $libSource = Join-Path $package 'lib\\freeglut.lib'
+          $dllSource = Join-Path $package 'bin\\freeglut.dll'
+
+          foreach ($path in @($includeSource, $libSource, $dllSource)) {
+            if (-not (Test-Path $path)) { throw "FreeGLUT output missing: $path" }
+          }
+          New-Item -ItemType Directory -Force -Path $includeTarget | Out-Null
+          Copy-Item (Join-Path $includeSource '*') $includeTarget -Recurse -Force
+          Copy-Item $libSource (Join-Path $glutRoot 'lib\\glut64.lib') -Force
+          Copy-Item $dllSource (Join-Path $glutRoot 'lib\\freeglut.dll') -Force
+          Write-Host 'Installed MSVC x64 FreeGLUT headers, import library and runtime DLL.'
 
       - name: Configure MSBuild
         uses: microsoft/setup-msbuild@v3
 
+      - name: Validate FreeGLUT import library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lib = Join-Path $env:GITHUB_WORKSPACE 'upstream\\thirdparty\\glut\\3.7.6\\lib\\glut64.lib'
+          & lib.exe /list $lib
+          if ($LASTEXITCODE -ne 0) { throw 'The generated FreeGLUT import library is not a valid MSVC library.' }
+
       - name: Configure OpenToonz
         shell: cmd
         run: |
-          cd upstream\toonz
+          cd upstream\\toonz
           if exist build rmdir /S /Q build
           mkdir build
           cd build
-          cmake ..\sources -G "%MSVCVERSION%" -T v142 -A x64 -DQT_PATH="%QT_PATH%" -DBOOST_ROOT="%BOOST_ROOT%" -DOpenCV_DIR="%OpenCV_DIR%" -DWITH_WINTAB=Y
+          cmake ..\\sources -G "%MSVCVERSION%" -T v142 -A x64 -DQT_PATH="%QT_PATH%" -DBOOST_ROOT="%BOOST_ROOT%" -DOpenCV_DIR="%OpenCV_DIR%" -DWITH_WINTAB=Y
 
       - name: Build OpenToonz
         shell: cmd
         run: |
-          cd upstream\toonz\build
+          cd upstream\\toonz\\build
           msbuild /p:Configuration=RelWithDebInfo /m /verbosity:minimal ALL_BUILD.vcxproj
 
       - name: Package portable baseline
         shell: cmd
         run: |
-          cd upstream\toonz\build
+          cd upstream\\toonz\\build
           mkdir OpenToonz
-          copy /Y RelWithDebInfo\*.* OpenToonz\
-          copy /Y ..\..\thirdparty\glut\3.7.6\lib\glut64.dll OpenToonz
-          copy /Y ..\..\thirdparty\glew\glew-1.9.0\bin\64bit\glew32.dll OpenToonz
-          copy /Y ..\..\thirdparty\libmypaint\dist\64\libiconv-2.dll OpenToonz
-          copy /Y ..\..\thirdparty\libmypaint\dist\64\libintl-8.dll OpenToonz
-          copy /Y ..\..\thirdparty\libmypaint\dist\64\libjson-c-2.dll OpenToonz
-          copy /Y ..\..\thirdparty\libmypaint\dist\64\libmypaint-1-4-0.dll OpenToonz
-          copy /Y "C:\tools\opencv\build\x64\vc16\bin\opencv_world4130.dll" OpenToonz
-          "%QT_PATH%\bin\windeployqt.exe" OpenToonz\OpenToonz.exe --opengl
-          if exist OpenToonz\*.pdb del /Q OpenToonz\*.pdb
-          if exist OpenToonz\vc_redist.x64.exe del /Q OpenToonz\vc_redist.x64.exe
-          mkdir OpenToonz\portablestuff
-          xcopy /Y /E /I ..\..\stuff OpenToonz\portablestuff
+          copy /Y RelWithDebInfo\\*.* OpenToonz\\
+          copy /Y ..\\..\\thirdparty\\glut\\3.7.6\\lib\\freeglut.dll OpenToonz
+          copy /Y ..\\..\\thirdparty\\glew\\glew-1.9.0\\bin\\64bit\\glew32.dll OpenToonz
+          copy /Y ..\\..\\thirdparty\\libmypaint\\dist\\64\\libiconv-2.dll OpenToonz
+          copy /Y ..\\..\\thirdparty\\libmypaint\\dist\\64\\libintl-8.dll OpenToonz
+          copy /Y ..\\..\\thirdparty\\libmypaint\\dist\\64\\libjson-c-2.dll OpenToonz
+          copy /Y ..\\..\\thirdparty\\libmypaint\\dist\\64\\libmypaint-1-4-0.dll OpenToonz
+          copy /Y "C:\\tools\\opencv\\build\\x64\\vc16\\bin\\opencv_world4130.dll" OpenToonz
+          "%QT_PATH%\\bin\\windeployqt.exe" OpenToonz\\OpenToonz.exe --opengl
+          if exist OpenToonz\\*.pdb del /Q OpenToonz\\*.pdb
+          if exist OpenToonz\\vc_redist.x64.exe del /Q OpenToonz\\vc_redist.x64.exe
+          mkdir OpenToonz\\portablestuff
+          xcopy /Y /E /I ..\\..\\stuff OpenToonz\\portablestuff
 
       - name: Upload portable baseline artifact
         uses: actions/upload-artifact@v6
