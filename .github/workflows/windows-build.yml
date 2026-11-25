@@ -65,7 +65,10 @@ jobs:
         shell: cmd
         run: |
           curl -fsSL -o thirdparty-libs.zip https://github.com/andeon/opentoonz-thirdparty-libs/releases/download/prebuilt-libs-v1/thirdparty-libs.zip
-          7z x -y thirdparty-libs.zip
+          rem The archive preserves the upstream thirdparty\\... paths, so extract it into the upstream checkout (not the workspace root).
+          7z x -y -o"%GITHUB_WORKSPACE%\\upstream" thirdparty-libs.zip
+          rem Fail early if the expected LFS libraries are still text pointers or missing.
+          powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $files=@('upstream/thirdparty/lzo/2.03/LZO_lib/lzo2_64.lib','upstream/thirdparty/glut/3.7.6/lib/glut64.lib'); foreach($f in $files){ if(!(Test-Path $f)){ throw \"Missing library: $f\" }; $b=[IO.File]::ReadAllBytes((Resolve-Path $f)); if($b.Length -lt 8 -or [Text.Encoding]::ASCII.GetString($b,0,[Math]::Min(20,$b.Length)).StartsWith('version https://git-lfs')){ throw \"Invalid Git LFS placeholder or empty library: $f\" }; Write-Host \"Verified $f ($($b.Length) bytes)\" }"
 
       - name: Configure MSBuild
         uses: microsoft/setup-msbuild@v3
