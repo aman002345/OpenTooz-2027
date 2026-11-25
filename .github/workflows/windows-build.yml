@@ -1,0 +1,113 @@
+name: Windows x64 baseline build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-build.yml'
+      - 'patches/**'
+      - 'README.md'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      QT_PATH: ${{ github.workspace }}\upstream\thirdparty\qt\5.15.2_wintab\msvc2019_64
+      MSVCVERSION: "Visual Studio 17 2022"
+      BOOST_TOOLSET: "14.3"
+      BOOST_VERSION: "1.87.0"
+      BOOST_ROOT: C:\local\boost_1_87_0
+      OPENCV_VERSION: "4.13.0"
+      OpenCV_DIR: C:\tools\opencv\build
+
+    steps:
+      - name: Checkout OpenTooz project
+        uses: actions/checkout@v6
+
+      - name: Checkout official OpenToonz source
+        uses: actions/checkout@v6
+        with:
+          repository: opentoonz/opentoonz
+          ref: master
+          path: upstream
+          lfs: false
+
+      - name: Cache OpenCV and Boost
+        id: cache-deps
+        uses: actions/cache@v5
+        with:
+          path: |
+            C:\tools\opencv
+            ${{ env.BOOST_ROOT }}
+          key: ${{ runner.os }}-opentoonz-deps-${{ env.OPENCV_VERSION }}-boost-${{ env.BOOST_VERSION }}
+
+      - name: Install OpenCV and Boost
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          choco install opencv --version=${{ env.OPENCV_VERSION }} -y
+          choco install boost-msvc-${{ env.BOOST_TOOLSET }} --version=${{ env.BOOST_VERSION }} -y
+
+      - name: Install custom Qt 5.15.2 with WinTab support
+        shell: cmd
+        run: |
+          mkdir upstream\thirdparty\qt
+          curl -fsSL -o Qt5.15.2_wintab.zip https://github.com/shun-iwasawa/qt5/releases/download/v5.15.2_wintab/Qt5.15.2_wintab.zip
+          7z x Qt5.15.2_wintab.zip
+          move Qt5.15.2_wintab\5.15.2_wintab upstream\thirdparty\qt
+
+      - name: Install upstream prebuilt third-party libraries
+        shell: cmd
+        run: |
+          curl -fsSL -o thirdparty-libs.zip https://github.com/andeon/opentoonz-thirdparty-libs/releases/download/prebuilt-libs-v1/thirdparty-libs.zip
+          7z x -y thirdparty-libs.zip
+
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Configure OpenToonz
+        shell: cmd
+        run: |
+          cd upstream\toonz
+          if exist build rmdir /S /Q build
+          mkdir build
+          cd build
+          cmake ..\sources -G "%MSVCVERSION%" -T v142 -A x64 -DQT_PATH="%QT_PATH%" -DBOOST_ROOT="%BOOST_ROOT%" -DOpenCV_DIR="%OpenCV_DIR%" -DWITH_WINTAB=Y
+
+      - name: Build OpenToonz
+        shell: cmd
+        run: |
+          cd upstream\toonz\build
+          msbuild /p:Configuration=RelWithDebInfo /m /verbosity:minimal ALL_BUILD.vcxproj
+
+      - name: Package portable baseline
+        shell: cmd
+        run: |
+          cd upstream\toonz\build
+          mkdir OpenToonz
+          copy /Y RelWithDebInfo\*.* OpenToonz\
+          copy /Y ..\..\thirdparty\glut\3.7.6\lib\glut64.dll OpenToonz
+          copy /Y ..\..\thirdparty\glew\glew-1.9.0\bin\64bit\glew32.dll OpenToonz
+          copy /Y ..\..\thirdparty\libmypaint\dist\64\libiconv-2.dll OpenToonz
+          copy /Y ..\..\thirdparty\libmypaint\dist\64\libintl-8.dll OpenToonz
+          copy /Y ..\..\thirdparty\libmypaint\dist\64\libjson-c-2.dll OpenToonz
+          copy /Y ..\..\thirdparty\libmypaint\dist\64\libmypaint-1-4-0.dll OpenToonz
+          copy /Y "C:\tools\opencv\build\x64\vc16\bin\opencv_world4130.dll" OpenToonz
+          "%QT_PATH%\bin\windeployqt.exe" OpenToonz\OpenToonz.exe --opengl
+          if exist OpenToonz\*.pdb del /Q OpenToonz\*.pdb
+          if exist OpenToonz\vc_redist.x64.exe del /Q OpenToonz\vc_redist.x64.exe
+          mkdir OpenToonz\portablestuff
+          xcopy /Y /E /I ..\..\stuff OpenToonz\portablestuff
+
+      - name: Upload portable baseline artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: OpenTooz-2027-Windows-x64-baseline-${{ github.sha }}
+          path: upstream/toonz/build/OpenToonz
+          if-no-files-found: error
+          retention-days: 14
